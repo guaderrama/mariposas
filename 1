@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Corazón de Mariposas con Controles Profesionales</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Importar MediaPipe -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Inter', sans-serif;
+        }
+        canvas {
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+        .input_video {
+            display: none;
+        }
+        #controls {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background-color: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+            padding: 15px;
+            border-radius: 10px;
+            z-index: 100;
+            transition: opacity 0.3s ease, transform 0.3s ease;
+        }
+        #controls.hidden {
+            opacity: 0;
+            transform: translateX(-20px);
+            pointer-events: none;
+        }
+        #webcamBtn {
+            background-color: #4a4a8a;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        #webcamBtn:hover {
+            background-color: #6a6ad2;
+        }
+        #webcamBtn.active {
+            background-color: #c23b22;
+        }
+        #webcamBtn.active:hover {
+            background-color: #e05d44;
+        }
+    </style>
+</head>
+<body>
+    <div id="controls">
+        <h3 class="text-lg font-bold mb-2">Panel de Control</h3>
+        <button id="webcamBtn">Activar Cámara</button>
+        <p class="text-xs mt-3 text-gray-300">Presiona 'H' para ocultar/mostrar</p>
+    </div>
+    
+    <video class="input_video"></video>
+    <canvas id="butterflyCanvas"></canvas>
+
+    <script>
+        // --- Setup ---
+        const canvas = document.getElementById('butterflyCanvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        let butterflies = [];
+        let interactionPoints = [];
+        const interactionRadius = 100;
+
+        // --- Control State ---
+        let handsDetected = false;
+        let webcamActive = false;
+        let hands = null;
+        let camera = null;
+        
+        const controlsPanel = document.getElementById('controls');
+        const webcamBtn = document.getElementById('webcamBtn');
+        const videoElement = document.querySelector('.input_video');
+
+        // --- Butterfly Class ---
+        class Butterfly {
+             constructor(homeX, homeY, hue, orientationAngle) {
+                this.homeX = homeX;
+                this.homeY = homeY;
+                this.x = homeX;
+                this.y = homeY;
+                this.hue = hue; 
+                this.orientationAngle = orientationAngle;
+                this.size = Math.random() * 8 + 8;
+                this.flapAngle = Math.random() * Math.PI * 2;
+                this.flapSpeed = Math.random() * 0.1 + 0.05;
+                
+                this.velocityX = 0;
+                this.velocityY = 0;
+                this.baseMaxSpeed = Math.random() * 2 + 1;
+                this.maxSpeed = this.baseMaxSpeed;
+                this.maxForce = 0.1;
+                this.wanderAngle = 0;
+                this.state = 'inFormation'; 
+            }
+
+            applyForce(forceX, forceY) {
+                this.velocityX += forceX;
+                this.velocityY += forceY;
+            }
+
+            seek(targetX, targetY) {
+                let desiredX = targetX - this.x;
+                let desiredY = targetY - this.y;
+                const d = Math.sqrt(desiredX*desiredX + desiredY*desiredY);
+                if (d > 0) {
+                    desiredX = (desiredX / d) * this.maxSpeed;
+                    desiredY = (desiredY / d) * this.maxSpeed;
+                    let steerX = desiredX - this.velocityX;
+                    let steerY = desiredY - this.velocityY;
+                    const steerMag = Math.sqrt(steerX*steerX + steerY*steerY);
+                    if (steerMag > this.maxForce) {
+                        steerX = (steerX / steerMag) * this.maxForce;
+                        steerY = (steerY / steerMag) * this.maxForce;
+                    }
+                    this.applyForce(steerX, steerY);
+                }
+            }
+            
+            wander() {
+                this.wanderAngle += Math.random() * 0.4 - 0.2;
+                const wanderTargetX = this.x + Math.cos(this.wanderAngle) * 100;
+                const wanderTargetY = this.y + Math.sin(this.wanderAngle) * 100;
+                this.seek(wanderTargetX, wanderTargetY);
+            }
+
+            update() {
+                this.flapAngle += this.flapSpeed;
+
+                // --- State driven by hand detection ---
+                if (handsDetected) {
+                    this.state = 'roaming';
+                    this.maxSpeed = this.baseMaxSpeed + 4; // Move faster
+                } else {
+                    this.maxSpeed = this.baseMaxSpeed; // Return to normal speed
+                    if(this.state === 'roaming') {
+                        this.state = 'returning';
+                    }
+                }
+
+                if (this.state === 'roaming') {
+                    this.wander();
+                } else if (this.state === 'returning' || this.state === 'inFormation') {
+                    this.seek(this.homeX, this.homeY);
+                    const distToHome = Math.sqrt(Math.pow(this.x - this.homeX, 2) + Math.pow(this.y - this.homeY, 2));
+                    if (distToHome < 10) {
+                        if(this.state === 'returning') {
+                           this.state = 'inFormation';
+                           this.x = this.homeX; // Snap to position
+                           this.y = this.homeY;
+                        }
+                        this.velocityX *= 0.9; // Slow down when near home
+                        this.velocityY *= 0.9;
+                    }
+                }
+                
+                // Repel from interaction points (fingers)
+                interactionPoints.forEach(point => {
+                    const dx = this.x - point.x;
+                    const dy = this.y - point.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    if (distance < interactionRadius) {
+                        const repelForce = (interactionRadius - distance) / interactionRadius;
+                        this.applyForce((dx / distance) * repelForce * 0.8, (dy / distance) * repelForce * 0.8);
+                    }
+                });
+                
+                // Update position
+                const speed = Math.sqrt(this.velocityX*this.velocityX + this.velocityY*this.velocityY);
+                if (speed > this.maxSpeed) {
+                    this.velocityX = (this.velocityX / speed) * this.maxSpeed;
+                    this.velocityY = (this.velocityY / speed) * this.maxSpeed;
+                }
+                this.x += this.velocityX;
+                this.y += this.velocityY;
+            }
+
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                const rotation = (this.velocityX !== 0 || this.velocityY !== 0) ? Math.atan2(this.velocityY, this.velocityX) : this.orientationAngle;
+                ctx.rotate(rotation);
+                
+                const flutter = Math.sin(this.flapAngle);
+                const s = this.size;
+                ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
+                ctx.lineWidth = 1.5;
+                
+                ctx.fillStyle = `hsl(${this.hue}, 90%, 60%)`;
+                ctx.beginPath();
+                ctx.moveTo(s*0.2, 0);
+                ctx.bezierCurveTo(s * 3, -s * 2 + flutter * s * 2, s * 3.5, -s * 4 + flutter * s, s*0.5, -s*0.5);
+                ctx.bezierCurveTo(s * 2.5, s * 1 - flutter * s, s * 2, s * 3.5 - flutter * s, s*0.2, 0);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+                
+                ctx.fillStyle = `hsl(${this.hue + 20}, 90%, 60%)`;
+                ctx.beginPath();
+                ctx.moveTo(-s*0.2, 0);
+                ctx.bezierCurveTo(-s * 3, -s * 2 + flutter * s * 2, -s * 3.5, -s * 4 + flutter * s, -s*0.5, -s*0.5);
+                ctx.bezierCurveTo(-s * 2.5, s * 1 - flutter * s, -s * 2, s * 3.5 - flutter * s, -s*0.2, 0);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+
+                ctx.beginPath();
+                ctx.fillStyle = '#202020';
+                ctx.ellipse(0, 0, s * 0.4, s * 1.6, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            }
+        }
+
+        function initButterflies() {
+            butterflies = [];
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+            const scale = Math.min(centerX, centerY) / 22;
+            const totalButterflies = 300;
+            for (let i = 0; i < totalButterflies; i++) {
+                let t = Math.random() * 2 * Math.PI;
+                let r = Math.random() * 0.8 + 0.2; 
+                let homeX = centerX + r * scale * 16 * Math.pow(Math.sin(t), 3);
+                let homeY = centerY - r * scale * (13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t));
+                const hue = Math.random() * 360;
+                const orientationAngle = Math.atan2(homeY - centerY, homeX - centerX) + Math.PI / 2;
+                butterflies.push(new Butterfly(homeX, homeY, hue, orientationAngle));
+            }
+        }
+
+        function animate() {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            butterflies.forEach(b => {
+                b.update();
+                b.draw();
+            });
+            requestAnimationFrame(animate);
+        }
+        
+        function onResults(results) {
+            handsDetected = results.multiHandLandmarks && results.multiHandLandmarks.length > 0;
+            interactionPoints = [];
+            if (handsDetected) {
+                for (const landmarks of results.multiHandLandmarks) {
+                    const fingerTips = [landmarks[4], landmarks[8], landmarks[12], landmarks[16], landmarks[20]];
+                    for (const point of fingerTips) {
+                        const canvasX = (1 - point.x) * canvas.width;
+                        const canvasY = point.y * canvas.height;
+                        interactionPoints.push({ x: canvasX, y: canvasY });
+                    }
+                }
+            }
+        }
+
+        function toggleWebcam() {
+            webcamActive = !webcamActive;
+            if (webcamActive) {
+                webcamBtn.textContent = 'Desactivar Cámara';
+                webcamBtn.classList.add('active');
+
+                hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+                hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+                hands.onResults(onResults);
+
+                camera = new Camera(videoElement, {
+                    onFrame: async () => await hands.send({image: videoElement}),
+                    width: 1280,
+                    height: 720
+                });
+                camera.start();
+            } else {
+                webcamBtn.textContent = 'Activar Cámara';
+                webcamBtn.classList.remove('active');
+                if (camera) camera.stop();
+                handsDetected = false;
+                interactionPoints = [];
+            }
+        }
+
+        // --- Event Listeners ---
+        webcamBtn.addEventListener('click', toggleWebcam);
+        
+        window.addEventListener('keydown', (e) => {
+            if (e.key.toLowerCase() === 'h') {
+                controlsPanel.classList.toggle('hidden');
+            }
+        });
+
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            initButterflies();
+        });
+
+        initButterflies();
+        animate();
+    </script>
+</body>
+</html>
